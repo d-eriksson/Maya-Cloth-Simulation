@@ -1,73 +1,123 @@
-#include <string.h>
-#include <maya/MIOStream.h>
-#include <maya/MStringArray.h>
-#include <math.h>
-#include <maya/MItGeometry.h>
-#include <maya/MItMeshVertex.h>
-#include <maya/MItSelectionList.h>
-#include <maya/MPxLocatorNode.h> 
-
-#include <maya/MFnNumericAttribute.h>
-#include <maya/MFnMatrixAttribute.h>
-#include <maya/MFnMatrixData.h>
-
-#include <maya/MFnPlugin.h>
-#include <maya/MFnDependencyNode.h>
-
-#include <maya/MTypeId.h> 
-#include <maya/MPlug.h>
-
-#include <maya/MDataBlock.h>
-#include <maya/MDataHandle.h>
-#include <maya/MArrayDataHandle.h>
-
-#include <maya/MPoint.h>
-#include <maya/MIntArray.h>
-#include <maya/MVector.h>
-#include <maya/MMatrix.h>
-#include <maya/MPointArray.h>
-
-#include <maya/MDagModifier.h>
-
-#include <maya/MPxGPUDeformer.h>
-#include <maya/MGPUDeformerRegistry.h>
-#include <maya/MOpenCLInfo.h>
-#include <maya/MViewport2Renderer.h>
-#include <maya/MFnMesh.h>
-#include <clew/clew_cl.h>
 #include <vector>
 #include <maya/MSimple.h>
 #include <maya/MIOStream.h>
+
+#include <maya/MFnDependencyNode.h >
+#include <maya/MFnDagNode.h >
+#include <maya/MFnAnimCurve.h>
+#include <maya/MDGModifier.h >
+
+#include <maya/MSelectionList.h>
+
 #include <maya/MGlobal.h>
-
-#include<MassSpringSystem.cpp>
-
+#include <maya/MPlug.h >
+#include <maya/MObject.h>
+#include <maya/MDagPath.h>
+#include <maya/MTime.h>
+#include <maya/MVector.h>
+#include <MSSNode.cpp>
+#include <Spring.cpp>
 DeclareSimpleCommand( clothSim, "David Eriksson", "2019");
-
 MStatus clothSim::doIt( const MArgList& )
 {
-    MSelectionList selection;
-    MGlobal::getActiveSelectionList(selection);
-    MItSelectionList selection_iter(selection);
+    static const unsigned dimX = 10;
+    static const unsigned dimY = 10;
+    unsigned FRAMES = 24*10;
+    MVector wind = MVector(0.01,0.0,0.0);
+    
+    for(unsigned i = 0 ; i < dimX*dimY; i++){
+        MFnDependencyNode fnPolySp;
 
-    MDagPath selection_DagPath;
-    MObject component;
-    selection.getDagPath(0, selection_DagPath, component);
+        MObject	objPolySp = fnPolySp.create("polySphere");
+        MFnDagNode fnPolyTrans;
 
-    MFnMesh meshFn(selection_DagPath);
-    MPointArray positions;
-    meshFn.getPoints(positions, MSpace::kWorld);
+        MObject objPolyTrans = fnPolyTrans.create("transform");
+        MFnDagNode fnPolyShape;
 
-    MItMeshVertex itr(selection_DagPath, component);
-    MIntArray connectedVertices;
-
-    MassSpringSystem MSS(positions);
-
-    for ( ; !itr.isDone(); itr.next() )
-    {
-        itr.getConnectedVertices(connectedVertices);
-        MSS.addNode(itr.index(),connectedVertices);
+        MObject objPolyShp = fnPolyShape.create("mesh", objPolyTrans);
+        MDGModifier	dgMod;
+        MPlug srcPlug = fnPolySp.findPlug("output");
+        MPlug destPlug = fnPolyShape.findPlug("inMesh");
+        dgMod.connect(srcPlug, destPlug);
+        dgMod.doIt();
     }
-    cout << MSS.connectedNodes << endl;
+    MSelectionList allSpheres;
+    MString toMatch("transform*");
+    MGlobal::getSelectionListByName(toMatch, allSpheres);
+    double xt;
+    double yt =3.0;
+    double zt;
+    MSSNode *Nodes[dimX*dimY];// = new std::vector<MSSNode>();
+    for(unsigned s = 0; s < allSpheres.length(); s++ ){
+        MObject temp;
+        allSpheres.getDependNode(s, temp);
+        MFnDependencyNode fn(temp);
+        xt =2.0 * (s % dimX);
+        zt =2.0* (s / dimY); 
+        MPlug translateX = fn.findPlug("translateX");
+        MPlug translateY = fn.findPlug("translateY");
+        MPlug translateZ = fn.findPlug("translateZ");
+        translateX.setValue(xt);
+        translateY.setValue(yt);
+        translateZ.setValue(zt);
+        //double X;
+        //translateX.getValue(X);
+        //cout << X<< endl;
+        MPoint pos(xt,yt,zt);
+        MDagPath pth;
+        allSpheres.getDagPath(s, pth);
+        //MSSNode node(pos,pth, FRAMES,s);
+        Nodes[s]= new MSSNode(pos,pth,FRAMES,s);//node;
+    }
+    
+    //Horizontal springs
+    std::vector<Spring> springs;
+    for(unsigned s = 0; s < allSpheres.length()-1; s++ ){
+        if((s+1)% dimX != 0){
+            springs.push_back(Spring(Nodes[s], Nodes[s+1]));
+        }
+    }
+    
+    //Vertical springs
+    for(unsigned s = 0; s < allSpheres.length()-1; s++ ){
+
+        if((s)/ dimY != dimY-1){
+            springs.push_back(Spring(Nodes[s], Nodes[s+dimY]));
+        }
+    }
+    // Diagonal springs
+    for(unsigned s = 0; s < allSpheres.length()-1; s++ ){
+        if(s/dimY != 0 && (s+1)% dimX != 0){ // Bottom left to top right diagonally
+            springs.push_back(Spring(Nodes[s], Nodes[s-dimY+1]));
+        }
+        if(s/dimY != dimY-1 && (s+1)% dimX != 0){ // top left to bottom right diagonally
+            springs.push_back(Spring(Nodes[s], Nodes[s+dimY+1]));
+        }
+    }
+    /*int c = 0;
+    for(Spring s : springs){
+        s.print();
+        c++;
+    }
+    for(unsigned s = 0; s < allSpheres.length(); s++ ){
+        Nodes[s]->print();
+    }*/
+    
+    for(unsigned f = 2; f <= FRAMES; f++){
+
+        for(Spring s : springs){
+            s.setForce(f);
+        }
+        for(unsigned s = 0; s < allSpheres.length(); s++ ){
+            Nodes[s]->calculatePosition(f,wind);
+        }
+    }
+    
+    for(unsigned s = 0; s < allSpheres.length(); s++ ){
+            Nodes[s]->render();
+    }
+    
+
+    
     return MS::kSuccess;
 }
